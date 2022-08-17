@@ -1,0 +1,695 @@
+---
+title: "KFRB Halapaakai Trap Setting Analysis - - Rerun without Omitting missing counters, accounting for failed traps, and using the deadthings variable that takes the max of counter or body count data, rather than summing them and dropping the camp trap. Use Landscape instead of lidar variables."
+author: '[Mari K Reeves](https://github.com/marireeves)'
+date: "`r Sys.Date()`"
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, echo = T, include=T, root.dir = "C:/Users/marireeves/Documents/RatTrapFever/Data/HighLowTraps/"}
+knitr::opts_chunk$set(echo = FALSE)
+
+```
+
+```{r global_options, echo=TRUE, message=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='Figs/',
+                     echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+
+```{r Read in Packages, include=FALSE}
+pckg <- c("tidyverse","RColorBrewer", "ggplot2","tictoc", "lme4", "nnet","arm","pwr", "modelr", "caret","arsenal",
+          "merTools", "lattice", "knitr", "markdown", "rmarkdown", "emmeans", "pscl", "MASS", "boot", "ggpubr")
+for(i in 1:length(pckg)){
+  if ((!pckg[i] %in% installed.packages())==T) {
+    install.packages(pckg[i], repos="http://cran.us.r-project.org",
+                     dependencies = T)
+    print(pckg[i])
+    do.call("library", list(pckg[i]))
+  }else{
+    print(pckg[i])
+    do.call("library", list(pckg[i]))
+  }
+}
+```
+
+
+```{r Clean Workspace and Set Directories, include=FALSE}
+rm(list = ls()) #'remove all past worksheet variables
+
+set.seed(333)
+basedir<-"C:/Users/marireeves/Documents/Rats/A24MS/FinalRevisions/"
+
+#Take in the unfiltered data 
+meta<-read.csv(paste0(basedir, "Metadata4R.csv"))
+raw<-read.csv(paste0(basedir, "20_06_17_HighLowTraps.csv"))
+spatial<-read.csv(paste0(basedir, "20_06_05_geospatial.csv"))
+```
+
+
+
+```{r filter out first trap checks of the year, include=FALSE}
+names(raw)
+str(raw)
+raw$Date<-as.factor(raw$check.date)
+levels(raw$Date)
+#need to remove the first check of the year, because traps not running before them. 
+#We do this by retaining only rows with trapnights>0
+raw<-raw[raw$TrapNights>0,]
+
+#this next line of code replaces NA values with zeroes, so we can do math to them below without returning NA
+raw$test.fire[is.na(raw$test.fire)]<-0
+
+mean(raw$TrapNights)
+raw$TrapNights<-ifelse(raw$test.fire == "Fail", raw$TrapNights*0.66, raw$TrapNights)
+mean(raw$TrapNights)
+raw$TrapNights
+#this does reduce the mean trap nights from 111 to 104..so more of an effect than at MOH
+raw$test.fire<-as.factor(raw$test.fire)
+levels(raw$test.fire)
+
+#drop the camp trap..it was checked too often. 
+raw<-raw[raw$station!="Camp",]
+```
+
+
+
+```{r merge with LIDAR data, include=T}
+#merge the geospatial data with the monitoring data This brings in lidar and habitat variables
+stations<-left_join( raw, spatial, by = "station")
+names(stations)
+```
+
+```{r cut columns to retain only those of interest, include=FALSE}
+#cut columns to retain only those of interest
+#All these were static chocolate baits, so not retaining that column for analysis.
+traps<-stations[ ,c("check.date","TrapNights","CounterChange" ,"Month" ,"station",  "height",
+                   "Habitat","TreeDensity", "ElevationDTM","LIDARMidCanopyDensity", "TotalWetnessIndex" ,
+                   "All.Rat","All.Rodent")]
+names(traps)<-c("check.date","TrapNights","CounterChange" ,"Month" ,"station",  "height",
+                   "Habitat","TreeDensity", "ElevationDTM","LIDARMidCanopyDensity","TotalWetnessIndex" ,
+                   "rats","rodents")
+traps$CounterChange[traps$CounterChange == "#VALUE!"]<-0#This and next line change values from missing/broken counters to zero so that we can keep all the traps where we have body counts but no counter data.
+
+#traps<-na.omit(traps)
+```
+
+
+```{r clean up some variables}
+traps$CounterChange<-as.numeric(traps$CounterChange)
+
+traps$mice<-traps$rodents-traps$rats#make a mouse variable from body counts. assumes rodents that are not rats are mice
+traps$date<-as.character(traps$check.date)#change date from factor to character
+traps$date<-as.POSIXct(traps$check.date, tz = "", format = "%m/%d/%Y" )
+                        #make a column R reads as a date, not just text
+traps$station<-as.factor(traps$station)  
+
+traps$season<-as.factor(traps$date)
+levels(traps$Month)
+
+#This fixes the seasonal month issue. 
+traps$season<-NA
+traps$season[traps$date < "2019-04-30"]<-"Spring2019"
+traps$season[(traps$date > "2019-05-01")& (traps$date <"2019-07-10")]<-"Summer2019" #betwen 5/1 and 7/10
+traps$season[(traps$date > "2019-11-17") &(traps$date < "2019-11-21")]<-"Fall2019"
+traps$season[(traps$date > "2020-03-20") & (traps$date < "2020-05-09")] <- "Spring2020"   
+traps$season<-as.factor(traps$season)
+traps$Habitat<-as.character(traps$Habitat)
+traps$Habitat[traps$Habitat=="Bog"]<-"Terrace"             
+traps$Habitat<-as.factor(traps$Habitat)
+traps$height<-as.factor(traps$height)
+
+str(traps)
+```
+#generate a few more response variables, in case we want to test them this way
+```{r}
+#check counts of traps in spring 2019 for cali and drop remaining Spring 2019 data from the dataset
+
+traps<-traps[traps$season!="Spring2019",]
+traps<-traps[!is.na(traps$Habitat),]
+```
+
+```{r, per trap night body and counter responses}
+str(traps)
+names(traps)
+
+traps$ratsptn<-traps$rats/traps$TrapNights
+traps$miceptn<-traps$mice/traps$TrapNights
+traps$rodentsptn<-traps$rodents/traps$TrapNights
+traps$counterptn<-traps$CounterChange/traps$TrapNights
+```
+```{r, now scale these variables, create z-scores from them}
+traps$scaledratsptn<-scale(traps$ratsptn)
+traps$scaledmiceptn<-scale(traps$miceptn)
+traps$scaledrodentsptn<-scale(traps$rodentsptn)
+traps$scaledcounterchangeptn<-scale(traps$counterptn)
+```
+
+#Now The data are together, letʻs take a look at how the lidar variables are correlated
+
+```{r, include = T}
+names(traps)
+plot(traps[,c("Habitat","TreeDensity","ElevationDTM", "LIDARMidCanopyDensity",  "TotalWetnessIndex" )])#plot predictors against themselves
+ggplot(traps, aes(Habitat, TreeDensity))+geom_boxplot()
+ggplot(traps, aes(Habitat, ElevationDTM))+geom_boxplot()
+ggplot(traps, aes(Habitat, LIDARMidCanopyDensity))+geom_boxplot()
+ggplot(traps, aes(Habitat, TotalWetnessIndex))+geom_boxplot()
+
+str(traps)
+
+```
+
+
+
+For this analysis, we're just going to use habitat rather than any of the LIDAR variables, to be consistent with the other analyses.
+
+
+
+```{r, take a quick look at non-zero data}
+nonzero<-traps[(traps$rodents>0|traps$CounterChange>0),]
+names(nonzero)
+plot(nonzero[,c(2,6:12)])#plot predictors against themselves
+plot(nonzero[,c(3,13:16)])#plot responses against themselves and transformed versions of themselves
+plot(nonzero[,17:20])
+
+str(nonzero)
+spatcorrnonzero<-cor(nonzero[,8:12], use = "complete.obs")
+#kable(spatcorrnonzero)
+```
+
+This does show higher body counts and counter changes later in the season. It also shows that counter changes are sometimes zero when bodies are found and no bodies are found with positive counter changes, so itʻs a mess. Letʻs create a logistic variable for any kill whatsoever, as Cali suggested, so that we can run it as a logistic using all data. 
+
+```{r, create a binomial variable as a response that includes whether we have any indication that something died here during the sampling period}
+traps$deadornot<-ifelse((traps$rodents>0|traps$CounterChange>0),1,0)
+min(traps$deadornot)
+max(traps$deadornot)
+traps$deadthings<-pmax(traps$CounterChange,traps$rodents)
+max(traps$deadthings)
+
+```
+
+#This is double counting some things...
+#I am making a decision here to divide by trapnights first and then sum the variable, which still is double counting some things, but I think will result in more variation across the response index...and it absolutely does do this.
+```{r, try null model with station id only}
+traps$dtptn<-traps$deadthings/traps$TrapNights
+null<-lmer(dtptn~1|station, data=traps)
+summary(null)
+
+# 
+# full<-lmer(dtptn~height+season+Habitat+1|station, data=traps)
+# summary(full)
+# 
+# Error: number of observations (=474) <= number of random effects (=984) for term (height + season + Habitat + 1 | station); the random-effects parameters and the residual variance (or scale parameter) are probably unidentifiable
+```
+
+```{r, summary stats on deadthings, include = T}
+#more complicated models are failing on repeated measures, so here we aggregate the data to the level of station
+deadthings<-aggregate(list( traps$TrapNights, traps$deadthings), by = list( traps$height, traps$station,  traps$Habitat, traps$season), FUN=sum)
+names(deadthings)<-c( "height","station",  "habitat", "season","trapnights", "max_deadthings")
+print("max deadthings aggregated")
+max(deadthings$max_deadthings)
+
+print("mean deadthings aggregated")
+mean(deadthings$max_deadthings)
+
+print("max trap nights aggregated")
+max(deadthings$trapnights)
+
+#add a variable to divide by trapnights, then drop both variables below
+deadthings$deadthingsptn<-deadthings$max_deadthings/deadthings$trapnights
+
+names(deadthings)
+print("Mean Deadthingsptn=")
+mean(deadthings$deadthingsptn)
+print("Median Deadthingsptn=")
+median(deadthings$deadthingsptn)
+print("Min Deadthingsptn=")
+min(deadthings$deadthingsptn)
+print("Max Deadthingsptn=")
+max(deadthings$deadthingsptn)
+
+
+print("Mean Deadthings=")
+mean(deadthings$max_deadthings)
+print("Median Deadthings=")
+median(deadthings$max_deadthings)
+print("Min Deadthings=")
+min(deadthings$max_deadthings)
+print("Max Deadthings=")
+max(deadthings$max_deadthings)
+```
+
+```{r}
+
+#drop station, trapnights, and maxes.  WE don't want to test it in the models. maxes are in another code with this same date.
+deadthings<-deadthings[,c( "height",  "habitat", "season","deadthingsptn")]
+
+table(deadthings$deadthingsptn)
+
+```
+
+
+```{r, summary stats on dead or not, include = T}
+deadornot<-aggregate(list(traps$TrapNights,traps$deadornot), by = list( traps$height, traps$station,  traps$Habitat, traps$season), FUN=sum )
+names(deadornot)<-c( "height", "station", "habitat", "season", "trapnights","max_deadornot")
+#add a variable to divide by trapnights, then drop both variables below
+deadornot$deadornotptn<-deadornot$max_deadornot/deadornot$trapnights
+print("max deadornot aggregated")
+max(deadornot$max_deadornot)
+
+print("max trap nights aggregated")
+max(deadornot$trapnights)
+
+print("mean deadornot aggregated")
+mean(deadornot$max_deadornot)
+
+
+names(deadornot)
+print("Mean Deadornotptn=")
+mean(deadornot$deadornotptn)
+print("Median Deadornotptn=")
+median(deadornot$deadornotptn)
+print("Min Deadornotptn=")
+min(deadornot$deadornotptn)
+print("Max Deadornotptn=")
+max(deadornot$deadornotptn)
+
+print("Mean Deadornot=")
+mean(deadornot$max_deadornot)
+print("Median Deadornot=")
+median(deadornot$max_deadornot)
+print("Min Deadornot=")
+min(deadornot$max_deadornot)
+print("Max Deadornot=")
+max(deadornot$max_deadornot)
+```
+
+
+```{r, aggregate the kill data to station by summing, include = T}
+#drop station. trapnights, and maxes, WE don't want to test it in the models.
+deadornot<-deadornot[,c( "height",  "habitat", "season","deadornotptn")]
+table(deadornot$deadornotptn)
+
+
+```
+
+```{r, create data summary table of lidar data by habitat}
+library(arsenal)
+
+names(stations)
+
+lidar<-aggregate(list(stations$CanopyHeight, stations$TreeDensity, stations$ElevationDTM, stations$LIDAR25_UnderstoryDensity, stations$LIDARMidCanopyDensity,stations$LIDAR_75CanopyDensity, stations$LIDAR90CanopyDensity , stations$slope_10mp, stations$TotalWetnessIndex), by=list(stations$Habitat, stations$station),  FUN=mean)
+
+
+names(lidar)<-c("Habitat", "station","CanopyHeight","TreeDensity","ElevationDTM", "lidar25canopy","LIDARMidCanopyDensity","lidar75canopy","lidar90canopy","slope",  "TotalWetnessIndex")
+
+gapminder<-lidar[,c( "CanopyHeight", "TreeDensity","ElevationDTM", "lidar25canopy","LIDARMidCanopyDensity","lidar75canopy","lidar90canopy","slope",  "TotalWetnessIndex", "Habitat" )]
+table_one <- tableby(Habitat ~ ., data = gapminder)
+summary(table_one, title = "Lidar Data by Habitat")
+
+# write2(
+# object,
+# file,
+# ...,
+# append. = FALSE,
+# render. = TRUE,
+# keep.rmd = !render.,
+# output_format = NULL
+# )
+
+write2word(table_one, file = "HPKstats")
+
+```
+
+```{r, make the dead things into nicer looking variables}
+hist(deadthings$deadthingsptn)
+# this becomes the natural log of the max dead things aggregated, per all trap nights
+# add 0.0001 to get rid of zero values for the log transform
+# deadthings$deadthingsptn<-deadthings$deadthingsptn+0.01
+# deadthings$lnmaxdeadthingsptn<-log(deadthings$deadthingsptn)
+# hist(deadthings$lnmaxdeadthingsptn)
+# better. Drop the deadthingsptn intermediate variable
+# deadthings<-deadthings[,c( "height", "habitat", "season", "lnmaxdeadthingsptn")]
+
+#do the same with deadornot
+hist(deadornot$deadornotptn)
+#this doesn't look as good, but prob no log transform needed..
+#six one half dozen the other. leaving it untransformed
+
+
+
+```
+
+
+```{r, SPLIT DATA INTO TRAINING AND TEST DATA}
+#the code p=1 in the line below means we are now including all the data in this analysis
+splitData <- createDataPartition(deadthings$deadthingsptn, p = 1, list = FALSE, times = 1)
+randomtrain<-deadthings[splitData,]
+randomtest<-deadthings[-splitData,]
+#folds<-groupKFold(traps$station, k=5) - -this is how we specify group sampling strata, but I canʻt get it to run model t```{r, create data summary table of lidar data by habitat}
+
+names(randomtrain)
+nearZeroVar(randomtrain)
+str(randomtrain)
+
+splitdead <- createDataPartition(deadornot$deadornotptn, p = 1, list = FALSE, times = 1)
+deadtrain<-deadornot[splitdead,]
+deadtest<-deadornot[-splitdead,]
+
+
+
+```
+
+```{r, Specify 10-fold cross validation}
+#This specifies 10 fold cross validation with 10 repeats default summary for regression
+fitControl <- trainControl(method = "repeatedcv", number = 10, repeats = 15, returnData = TRUE, 
+                           savePredictions = "final", 
+                           verboseIter = FALSE, returnResamp = "final" )
+```
+
+```{r, run a normal glm on all data ignoring station}
+glm_deadthingsptn_null<-glm(deadthingsptn ~ 1, data = randomtrain)
+summary(glm_deadthingsptn_null)
+plot(glm_deadthingsptn_null)
+rsqglm_deadthingsptn_null<-with(summary(glm_deadthingsptn_null), 1 - deviance/null.deviance) 
+
+glm_deadthingsptn<-glm(deadthingsptn ~ ., data = randomtrain)
+summary(glm_deadthingsptn)
+plot(glm_deadthingsptn)
+rsqglm_deadthingsptn<-with(summary(glm_deadthingsptn), 1 - deviance/null.deviance) 
+
+emmip(glm_deadthingsptn, height ~ season)
+emmip(glm_deadthingsptn, height ~ habitat)
+emmip(glm_deadthingsptn, season ~ habitat)
+
+glm_deadthingsptn_heightonly<-glm(deadthingsptn~height, data = randomtrain)
+summary(glm_deadthingsptn_heightonly)
+rsqglm_deadthingsptn_heightonly<-with(summary(glm_deadthingsptn_heightonly), 1 - deviance/null.deviance)
+plot(glm_deadthingsptn_heightonly)
+
+glm_deadthingsptn_habitat_season<-glm(deadthingsptn ~habitat +season, data = randomtrain)
+summary(glm_deadthingsptn_habitat_season)
+rsqglm_deadthingsptn_habitat_season<-with(summary(glm_deadthingsptn_habitat_season), 1 - deviance/null.deviance)
+plot(glm_deadthingsptn_habitat_season)
+
+glm_deadthingsptn_habitat<-glm(deadthingsptn~habitat , data = randomtrain)
+summary(glm_deadthingsptn_habitat)
+rsqglm_deadthingsptn_habitat<-with(summary(glm_deadthingsptn_habitat), 1 - deviance/null.deviance)
+plot(glm_deadthingsptn_habitat)
+
+glm_deadthingsptn_season<-glm(deadthingsptn~season, data = randomtrain)
+summary(glm_deadthingsptn_season)
+rsqglm_deadthingsptn_season<-with(summary(glm_deadthingsptn_season), 1 - deviance/null.deviance)
+plot(glm_deadthingsptn_season)
+
+deadthingmodels<-c("glm_deadthingsptn_null","glm_deadthingsptn", "glm_deadthingsptn_heightonly", "glm_deadthingsptn_habitat_season", "glm_deadthingsptn_habitat", "glm_deadthingsptn_season" )
+
+deadthingaic<-c(glm_deadthingsptn_null$aic, glm_deadthingsptn$aic, glm_deadthingsptn_heightonly$aic, glm_deadthingsptn_habitat_season$aic, glm_deadthingsptn_habitat$aic, glm_deadthingsptn_season$aic )
+
+deadthingrsq<-c(rsqglm_deadthingsptn_null, rsqglm_deadthingsptn, rsqglm_deadthingsptn_heightonly, rsqglm_deadthingsptn_habitat_season, rsqglm_deadthingsptn_habitat, rsqglm_deadthingsptn_season)
+
+deadthingdf<-c(glm_deadthingsptn_null$df.residual, glm_deadthingsptn$df.residual, glm_deadthingsptn_heightonly$df.residual, glm_deadthingsptn_habitat_season$df.residual, glm_deadthingsptn_habitat$df.residual, glm_deadthingsptn_season$df.residual)
+  
+deathingcomp<-data.frame(cbind(deadthingmodels,deadthingdf,  deadthingrsq, deadthingaic))
+names(deathingcomp)<-c("model","Degrees of Freedom", "R2", "AIC")
+
+deathingcomp<-deathingcomp[order(deathingcomp$AIC),]
+write.csv(deathingcomp, file = "HPK_deadthingcomp.csv")
+
+```
+```{r, run a log glm on all data ignoring station}
+#https://stats.stackexchange.com/questions/46345/how-to-calculate-goodness-of-fit-in-glm-r/46358
+
+glm_logdeadthingsptnnull<-glm(log(deadthingsptn+0.00001)~1, data = randomtrain)
+summary(glm_logdeadthingsptnnull)
+rsqglm_logdeadthingsptnnull<-with(summary(glm_logdeadthingsptnnull), 1-deviance/null.deviance)
+
+glm_logdeadthingsptn<-glm(log(deadthingsptn+0.00001) ~ ., data = randomtrain)
+summary(glm_logdeadthingsptn)
+plot(glm_logdeadthingsptn)
+rsqglm_logdeadthingsptn<-with(summary(glm_logdeadthingsptn), 1 - deviance/null.deviance) 
+
+emmip(glm_logdeadthingsptn, height ~ season)
+emmip(glm_logdeadthingsptn, height ~ habitat)
+emmip(glm_logdeadthingsptn, season ~ habitat)
+
+glm_logdeadthingsptn_heightonly<-glm(log(deadthingsptn+0.00001)~height, data = randomtrain)
+summary(glm_logdeadthingsptn_heightonly)
+rsqglm_logdeadthingsptn_heightonly<- with(summary(glm_logdeadthingsptn_heightonly), 1 - deviance/null.deviance)
+plot(glm_logdeadthingsptn_heightonly)
+
+glm_logdeadthingsptn_habitat_season<-glm(log(deadthingsptn+0.00001) ~habitat +season, data = randomtrain)
+summary(glm_logdeadthingsptn_habitat_season)
+rsqglm_logdeadthingsptn_habitat_season<-with(summary(glm_logdeadthingsptn_habitat_season), 1 - deviance/null.deviance)
+plot(glm_logdeadthingsptn_habitat_season)
+
+glm_logdeadthingsptn_habitat<-glm(log(deadthingsptn+0.00001)~habitat , data = randomtrain)
+summary(glm_logdeadthingsptn_habitat)
+rsqglm_logdeadthingsptn_habitat<-with(summary(glm_logdeadthingsptn_habitat), 1 - deviance/null.deviance)
+plot(glm_logdeadthingsptn_habitat)
+
+
+glm_logdeadthingsptn_season<-glm(log(deadthingsptn+0.00001)~season, data = randomtrain)
+summary(glm_logdeadthingsptn_season)
+rsqglm_logdeadthingsptn_season<-with(summary(glm_logdeadthingsptn_season), 1 - deviance/null.deviance)
+plot(glm_logdeadthingsptn_season)
+
+
+logdeadthingmodels<-c("glm_logdeadthingsptnnull","glm_logdeadthingsptn", "glm_logdeadthingsptn_heightonly", "glm_logdeadthingsptn_habitat_season", "glm_logdeadthingsptn_habitat", "glm_logdeadthingsptn_season" )
+
+logdeadthingmodelnames<-c("Null", "Full", "Trap Height", "Habitat and Season", "Habitat", "Season")
+
+logdeadthingaic<-c(glm_logdeadthingsptnnull$aic, glm_logdeadthingsptn$aic, glm_logdeadthingsptn_heightonly$aic, glm_logdeadthingsptn_habitat_season$aic, glm_logdeadthingsptn_habitat$aic, glm_logdeadthingsptn_season$aic )
+
+logdeadthingdf<-c(glm_logdeadthingsptnnull$df.residual, glm_logdeadthingsptn$df.residual, glm_logdeadthingsptn_heightonly$df.residual, glm_logdeadthingsptn_habitat_season$df.residual, glm_logdeadthingsptn_habitat$df.residual, glm_logdeadthingsptn_season$df.residual )
+
+logdeadthingrsq<-c(rsqglm_logdeadthingsptnnull, rsqglm_logdeadthingsptn, rsqglm_logdeadthingsptn_heightonly, rsqglm_logdeadthingsptn_habitat_season, rsqglm_logdeadthingsptn_habitat, rsqglm_logdeadthingsptn_season )
+
+logdeathingcomp<-data.frame(cbind(logdeadthingmodels,logdeadthingmodelnames, logdeadthingdf, logdeadthingaic, logdeadthingrsq))
+
+names(logdeathingcomp)<-c("model", "Model", "Degrees of Freedom","AIC", "R2")
+
+logdeathingcomp$`Degrees of Freedom`<-round(as.numeric(logdeathingcomp$`Degrees of Freedom`), digits = 0)
+logdeathingcomp$AIC<-round(as.numeric(logdeathingcomp$AIC), digits = 0)
+logdeathingcomp$R2<-round(as.numeric(logdeathingcomp$R2), digits = 2)
+logdeathingcomp<-logdeathingcomp[order(logdeathingcomp$AIC),]
+write.csv(logdeathingcomp, file = "HPK_logdeadthingcomp.csv")
+
+```
+```{r, run these as lms so we can get better data}
+
+lm_deadthingsptn<-lm(deadthingsptn ~ ., data = randomtrain)
+summary(lm_deadthingsptn)
+plot(lm_deadthingsptn)
+emmip(lm_deadthingsptn, height ~ season)
+emmip(lm_deadthingsptn, height ~ habitat)
+emmip(lm_deadthingsptn, season ~ habitat)
+
+lm_deadthingsptn_heightonly<-lm(deadthingsptn~height, data = randomtrain)
+summary(lm_deadthingsptn_heightonly)
+plot(lm_deadthingsptn_heightonly)
+
+lm_deadthingsptn_habitat_season<-lm(deadthingsptn ~habitat +season, data = randomtrain)
+summary(lm_deadthingsptn_habitat_season)
+plot(lm_deadthingsptn_habitat_season)
+
+lm_deadthingsptn_habitat<-lm(deadthingsptn~habitat , data = randomtrain)
+summary(lm_deadthingsptn_habitat)
+plot(lm_deadthingsptn_habitat)
+
+lm_deadthingsptn_season<-lm(deadthingsptn~season, data = randomtrain)
+summary(lm_deadthingsptn_season)
+plot(lm_deadthingsptn_season)
+
+# deadthingmodels<-c("lm_deadthingsptn", "lm_deadthingsptn_heightonly", "lm_deadthingsptn_habitat_season", "lm_deadthingsptn_habitat", "lm_deadthingsptn_season" )
+# 
+# deadthingaic<-c(lm_deadthingsptn$aic, lm_deadthingsptn_heightonly$aic, lm_deadthingsptn_habitat_season$aic, lm_deadthingsptn_habitat$aic, lm_deadthingsptn_season$aic )
+# 
+# deathingcomp<-data.frame(cbind(deadthingmodels, deadthingaic))
+# names(deathingcomp)<-c("model", "AIC")
+# 
+# deathingcomp<-deathingcomp[order(deathingcomp$AIC),]
+# write.csv(deathingcomp, file = "HPK_deadthingcomp.csv")
+
+```
+The season and habitat model is a WAY better fit than only height, and better than the full model, but by 2 pts only.
+```{r plot some things}
+
+ deadthings$FinalTreatment<-paste0(deadthings$height, deadthings$habitat, deadthings$season)
+ deadornot$FinalTreatment<-paste0(deadornot$height, deadornot$habitat, deadornot$season)
+
+  ggplot(deadthings, aes(height, deadthingsptn, fill=FinalTreatment, color = FinalTreatment))+geom_boxplot()
+
+  ggplot(deadornot, aes(height, deadornotptn, fill=FinalTreatment, color = FinalTreatment))+geom_boxplot()
+
+   ggplot(deadthings, aes(season, deadthingsptn, fill=FinalTreatment, color = FinalTreatment))+geom_boxplot()
+
+    ggplot(deadornot, aes(season, deadornotptn, fill=FinalTreatment, color = FinalTreatment))+geom_boxplot()
+
+     ggplot(deadthings, aes(habitat, deadthingsptn, fill=FinalTreatment, color = FinalTreatment))+geom_boxplot()
+
+    ggplot(deadornot, aes(habitat, deadornotptn, fill=FinalTreatment, color = FinalTreatment))+geom_boxplot()
+
+```
+#Use the full models to generate model adjusted means for variables of interest. Iʻm using the full model here, because it was only 2 points worse than the season habitat model and it will alow us to generate, report and visualize the contrasts.
+```{r, plot model adjusted mean values for logdeadthings}
+#https://cran.r-project.org/web/packages/emmeans/vignettes/basics.html
+#https://cran.r-project.org/web/packages/emmeans/vignettes/FAQs.html
+#https://cran.r-project.org/web/packages/emmeans/vignettes/transformations.html
+library(emmeans)
+heightmeans<-emmeans(glm_logdeadthingsptn, "height", type = "response")
+summary(heightmeans, infer = TRUE)
+pairs(heightmeans)
+ #emmip(lm_deadthingsptn, deadthingsptn ~ height | season)
+heightmeans<-data.frame(heightmeans)
+heightplot<-ggplot(heightmeans, aes(height, response, ymin=lower.CL, ymax=upper.CL)) +geom_crossbar()+ labs(x="Trap Height", y="")+theme_classic()+ylim(0.001, 0.025)+theme(axis.text.x=element_text(angle = 90, hjust = 0), text = element_text(size=12), axis.text.y=element_blank())
+
+
+habitatmeans<-emmeans(glm_logdeadthingsptn, "habitat", type = "response")
+summary(habitatmeans, infer = TRUE)
+pairs(habitatmeans)
+habitatmeans<-data.frame(habitatmeans)
+habitatplot<-ggplot(habitatmeans, aes(habitat, response, ymin=lower.CL, ymax=upper.CL)) +geom_crossbar ()+labs(x="Landscape", y="")+theme_classic()+ ylim(0.001, 0.025)+theme(axis.text.x=element_text(angle = 90, hjust = 0), text = element_text(size=12), axis.text.y=element_blank())
+
+seasonmeans<-emmeans(glm_logdeadthingsptn, "season", type = "response")
+summary(seasonmeans, infer = TRUE)
+pairs(seasonmeans)
+seasonmeans<-data.frame(seasonmeans)
+#mydf$task <- factor(mydf$task, levels = c("up", "down", "left", "right", "front", "back"))
+seasonmeans$season<-factor(seasonmeans$season, levels = c ("Summer2019", "Fall2019","Spring2020"))
+levels(seasonmeans$season)<-c("Summer", "Fall", "Spring")
+seasonplot<-ggplot(seasonmeans, aes(season, response, ymin=lower.CL, ymax=upper.CL)) +geom_crossbar()+labs(x="Season", y="Kills per Trap Night - Adjusted Means")+theme_classic()+ylim(0.001, 0.025)+theme(axis.text.x=element_text(angle = 90, hjust = 0), text = element_text(size=12))
+
+deadthingplot<-ggarrange( seasonplot, habitatplot, heightplot,
+                          labels = c( "Landscape", "Season", "Lure", "Blocker"),
+                          ncol = 3, 
+                          nrow = 1, 
+                          hjust = c(-0.75, 0.5, 1, 1), 
+                         align = "hv",
+                         widths = c(1.75,1.75,1.5))
+                         # label.y = "Kills Per Trap Night (Model Adjusted Mean and Confidence Interval)")
+
+deadthingplot
+
+
+
+```
+
+
+```{r, Deadornot GLMs}
+
+glm_deadornotptn<-glm(deadornotptn ~ ., data = deadtrain)
+summary(glm_deadornotptn)
+plot(glm_deadornotptn)
+
+glm_deadornotptn_heightonly<-glm(deadornotptn~height, data = deadtrain)
+summary(glm_deadornotptn_heightonly)
+plot(glm_deadornotptn_heightonly)
+
+glm_deadornotptn_habitat_season<-glm(deadornotptn~habitat +season, data = deadtrain)
+summary(glm_deadornotptn_habitat_season)
+plot(glm_deadornotptn_habitat_season)
+
+glm_deadornotptn_habitat<-glm(deadornotptn~habitat , data = deadtrain)
+summary(glm_deadornotptn_habitat)
+plot(glm_deadornotptn_habitat)
+
+glm_deadornotptn_season<-glm(deadornotptn~season, data = deadtrain)
+summary(glm_deadornotptn_season)
+plot(glm_deadornotptn_season)
+
+deadornotmodels<-c("glm_deadornotptn", "glm_deadornotptn_heightonly", "glm_deadornotptn_habitat_season", "glm_deadornotptn_habitat", "glm_deadornotptn_season" )
+
+deadornotaic<-c(glm_deadornotptn$aic, glm_deadornotptn_heightonly$aic, glm_deadornotptn_habitat_season$aic, glm_deadornotptn_habitat$aic, glm_deadornotptn_season$aic )
+
+deathingcomp<-data.frame(cbind(deadornotmodels, deadornotaic))
+names(deathingcomp)<-c("model", "AIC")
+
+deathingcomp<-deathingcomp[order(deathingcomp$AIC),]
+write.csv(deathingcomp, file = "HPK_deadornotcomp.csv")
+
+```
+
+```{r, log deadornot models and summary}
+
+glm_logdeadornotptnnull<-glm(log(deadornotptn+0.0001)~1, data = deadtrain)
+summary(glm_logdeadornotptnnull)
+rsqglm_logdeadornotptnnull<-with(summary(glm_logdeadornotptnnull), 1-deviance/null.deviance)
+
+glm_logdeadornotptn<-glm(log(deadornotptn+0.001) ~ ., data = deadtrain)
+summary(glm_logdeadornotptn)
+plot(glm_logdeadornotptn)
+rsqglm_logdeadornotptn<-with(summary(glm_logdeadornotptn), 1 - deviance/null.deviance) 
+
+emmip(glm_logdeadornotptn, height ~ season)
+emmip(glm_logdeadornotptn, height ~ habitat)
+emmip(glm_logdeadornotptn, season ~ habitat)
+
+glm_logdeadornotptn_heightonly<-glm(log(deadornotptn+0.001)~height, data = deadtrain)
+summary(glm_logdeadornotptn_heightonly)
+rsqglm_logdeadornotptn_heightonly<- with(summary(glm_logdeadornotptn_heightonly), 1 - deviance/null.deviance)
+plot(glm_logdeadornotptn_heightonly)
+
+glm_logdeadornotptn_habitat_season<-glm(log(deadornotptn+0.001) ~habitat +season, data = deadtrain)
+summary(glm_logdeadornotptn_habitat_season)
+rsqglm_logdeadornotptn_habitat_season<-with(summary(glm_logdeadornotptn_habitat_season), 1 - deviance/null.deviance)
+plot(glm_logdeadornotptn_habitat_season)
+
+glm_logdeadornotptn_habitat<-glm(log(deadornotptn+0.001)~habitat , data = deadtrain)
+summary(glm_logdeadornotptn_habitat)
+rsqglm_logdeadornotptn_habitat<-with(summary(glm_logdeadornotptn_habitat), 1 - deviance/null.deviance)
+plot(glm_logdeadornotptn_habitat)
+
+
+glm_logdeadornotptn_season<-glm(log(deadornotptn+0.001)~season, data = deadtrain)
+summary(glm_logdeadornotptn_season)
+rsqglm_logdeadornotptn_season<-with(summary(glm_logdeadornotptn_season), 1 - deviance/null.deviance)
+plot(glm_logdeadornotptn_season)
+
+
+logdeadthingmodels<-c("glm_logdeadornotptnnull","glm_logdeadornotptn", "glm_logdeadornotptn_heightonly", "glm_logdeadornotptn_habitat_season", "glm_logdeadornotptn_habitat", "glm_logdeadornotptn_season" )
+
+logdeadthingmodelnames<-c("Null", "Full", "Trap Height", "Habitat and Season", "Habitat", "Season")
+
+logdeadthingaic<-c(glm_logdeadornotptnnull$aic, glm_logdeadornotptn$aic, glm_logdeadornotptn_heightonly$aic, glm_logdeadornotptn_habitat_season$aic, glm_logdeadornotptn_habitat$aic, glm_logdeadornotptn_season$aic )
+
+logdeadthingdf<-c(glm_logdeadornotptnnull$df.residual, glm_logdeadornotptn$df.residual, glm_logdeadornotptn_heightonly$df.residual, glm_logdeadornotptn_habitat_season$df.residual, glm_logdeadornotptn_habitat$df.residual, glm_logdeadornotptn_season$df.residual )
+
+logdeadthingrsq<-c(rsqglm_logdeadornotptnnull, rsqglm_logdeadornotptn, rsqglm_logdeadornotptn_heightonly, rsqglm_logdeadornotptn_habitat_season, rsqglm_logdeadornotptn_habitat, rsqglm_logdeadornotptn_season )
+
+logdeadornotcomp<-data.frame(cbind(logdeadthingmodels,logdeadthingmodelnames, logdeadthingdf, logdeadthingaic, logdeadthingrsq))
+
+names(logdeadornotcomp)<-c("model", "Model", "Degrees of Freedom","AIC", "R2")
+
+logdeadornotcomp$`Degrees of Freedom`<-round(as.numeric(logdeadornotcomp$`Degrees of Freedom`), digits = 0)
+logdeadornotcomp$AIC<-round(as.numeric(logdeadornotcomp$AIC), digits = 0)
+logdeadornotcomp$R2<-round(as.numeric(logdeadornotcomp$R2), digits = 2)
+logdeadornotcomp<-logdeadornotcomp[order(logdeadornotcomp$AIC),]
+write.csv(logdeadornotcomp, file = "HPK_logdeadornotcomp.csv")
+```
+
+
+```{r, plot model adjusted mean values for deadornot}
+heightmeansdeadnot<-emmeans(glm_deadornotptn, "height", type = "response")
+summary(heightmeansdeadnot, infer = TRUE)
+pairs(heightmeansdeadnot)
+heightmeansdeadnot<-data.frame(heightmeansdeadnot)
+ggplot(heightmeansdeadnot, aes(height, emmean, ymin=lower.CL, ymax=upper.CL)) +geom_crossbar()+ labs(x="Trap Height", y="Kills per Trap Night - KillsYN")+theme_classic()+ylim(0.001, 0.010)
+
+
+habitatmeansdeadnot<-emmeans(glm_deadornotptn, "habitat", type = "response")
+summary(habitatmeansdeadnot, infer = TRUE)
+pairs(habitatmeansdeadnot)
+habitatmeansdeadnot<-data.frame(habitatmeansdeadnot)
+ggplot(habitatmeansdeadnot, aes(habitat, emmean, ymin=lower.CL, ymax=upper.CL)) +geom_crossbar ()+labs(x="Landscape", y="Kills per Trap Night - KillsYN")+theme_classic()+ ylim(0.001, 0.010)
+
+seasonmeansdeadnot<-emmeans(glm_deadornotptn, "season", type = "response")
+summary(seasonmeansdeadnot, infer = TRUE)
+pairs(seasonmeansdeadnot)
+seasonmeansdeadnot<-data.frame(seasonmeansdeadnot)
+ggplot(seasonmeansdeadnot, aes(season, emmean, ymin=lower.CL, ymax=upper.CL)) +geom_crossbar()+labs(x="Season", y="Kills per Trap Night - KillsYN")+theme_classic()+ylim(0.001, 0.010)
+
+```
+

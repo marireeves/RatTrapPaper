@@ -1,0 +1,28 @@
+Metadata,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,
+Apr-20,,,,,,,,,,,,,,,,,,
+"I'm removing the entries in November when we went back to a trap a few days after refreshing it and saw a dead rodent. Basically this is all of the CC of 1-5 in November, regardless of if there was a carcass or not. It was these 9 rows",,,,,,,,,,,,,,,,,,
+EntryOrder,proofed?,date,TrapNights,CounterChange,Month,time,checker,station, trap status, bait type, bait condition, co2 cartridge present, counter present, counter number, test fire, counter status, excluder present,number bodies
+37,JMH,2019-11-19,0,#N/A,11,13:01,TAW,A11,Closed,NA,NA,NA,NA,NA,NA,NA,NA,NA
+38,JMH,2019-11-19,0,#N/A,11,13:20,TAW,A12,Open,choc,Old,Yes,No,NA,Fail,NA,No,0
+638,KDS,2019-11-20,1,1,11,11:00,JMH,B03,Open,choc,Old,Yes,Yes,2,Pass,Working,No,1
+641,KDS,2019-11-20,2,1,11,19:00,JMH,Camp,Open,choc,Old,Yes,Yes,2,Pass,Working,No,1
+642,KDS,2019-11-21,1,1,11,8:00,JMH,Camp,Open,choc,Old,Yes,Yes,3,Pass,Working,No,0
+143,JMH,2019-11-20,0,#N/A,11,16:18,KDS,G02,Empty,NA,NA,NA,NA,NA,NA,NA,NA,NA
+145,JMH,2019-11-21,0,#N/A,11,11:49,KDS,G07W,New,NA,NA,NA,NA,NA,NA,NA,NA,NA
+640,KDS,2019-11-20,2,1,11,12:00,JMH,Z00,Open,choc,Old,Yes,Yes,1,Pass,Working,No,1
+639,KDS,2019-11-20,2,2,11,11:30,JMH,Z01,Open,choc,Old,Yes,Yes,2,Pass,Working,No,2
+"I added Z01, Camp, B03. I didn't added Z00 since no check in spring 2020 (yet). ",,,,,,,,,,,,,,,,,,
+"Adding back G02, A11 and A12 from Nov2019. But not G07W (no spring 2020 data yet)",,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,
+"I'm changing these rows to counter on arrival = NA and counter status broken, because they're all negative counter change and all 00 on arrival, meaning counter prob broke/reset.",,,,,,,,,,,,,,,,,,
+187,JMH,2019-07-04,72,-1,7,14:51,ADJ,A01,,,,,,,,,,
+382,JMH,2019-07-04,72,-1,7,11:58,LAM,C13,,,,,,,,,,
+233,JMH,2019-07-04,71,-1,7,12:05,TAW,F04,,,,,,,,,,
+95,JMH,2019-11-20,140,-2,11,11:11,AED,F15,,,,,,,,,,
+188,JMH,2019-07-04,74,-1,7,15:09,ADJ,Z99,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,
+2-Jun-20,,,,,,,,,,,,,,,,,,
+Adding 2020 spring data,,,,,,,,,,,,,,,,,,
